@@ -1,0 +1,12 @@
+# Python virtual environment
+.venv/
+
+# Environment variables (RAHASIA)
+.env
+
+# Database & data
+data/
+*.db
+
+# Python cache
+__pycache__/
