@@ -1,12 +1,8 @@
-# Python virtual environment
 .venv/
-
-# Environment variables (RAHASIA)
 .env
-
-# Database & data
 data/
 *.db
-
-# Python cache
 __pycache__/
+.adk/
+FR_AI.pdf
+chunks_fr_ai.jsonl

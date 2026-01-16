@@ -1,3 +1,9 @@
+from dotenv import load_dotenv
+load_dotenv()
+
+import os
+print ("GOOGLE_API_KEY:", bool(os.getenv("GOOGLE_API_KEY")))
+
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -5,9 +11,12 @@ import requests
 import uuid
 from my_agent.agent import root_agent
 from google.adk.runners import Runner
+from my_agent.retrieval_tool import search_report
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 from my_agent.app.storage import DatabaseSessionService
+import traceback
+from fastapi.responses import PlainTextResponse
 
 LARAVEL_BASE_URL = "http://127.0.0.1:8000"  # kalau docker service name 'laravel'
 app = FastAPI(title="Tanya Dewi API")
@@ -21,43 +30,42 @@ adk_runner = Runner(
 )
 
 security = HTTPBearer()
-DEV_MODE = True
-DEV_TOKEN ="secrettoken"
+# DEV_MODE = True
+# DEV_TOKEN ="secrettoken"
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-    
-    if DEV_MODE and token == DEV_TOKEN:
-        return {"id": 1, "email": "dev@local", "token": token}
+
     try:
         r = requests.get(
             f"{LARAVEL_BASE_URL}/api/me",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
             timeout=10,
         )
-    except requests.RequestException:
-        raise HTTPException(status_code=503, detail="Laravel auth service unreachable")
+    except requests.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Laravel auth service unreachable: {e}")
 
-    if r.status_code != 200:
+    # Token invalid/expired
+    if r.status_code == 401:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Forbidden role / belum verify / dll (kalau Laravel kamu pakai 403)
+    if r.status_code == 403:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Error lain dari Laravel
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Auth service error: {r.status_code} {r.text}")
 
     data = r.json()
     user = data.get("user")
     if not user or "id" not in user:
-        raise HTTPException(status_code=401, detail="Cannot resolve user")
+        raise HTTPException(status_code=502, detail="Auth response missing user.id")
 
     return {"id": user["id"], "email": user.get("email"), "token": token}
-
-@app.get("/debug/auth")
-def debug_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    return {
-        "scheme": credentials.scheme,
-        "token": credentials.credentials,
-        "dev_mode": DEV_MODE,
-        "dev_token": DEV_TOKEN,
-        "dev_match": credentials.credentials == DEV_TOKEN,
-    }
-
 
 class ChatSendRequest(BaseModel):
     conversation_id: str
@@ -127,16 +135,9 @@ async def chat_send(payload: ChatSendRequest, current_user=Depends(get_current_u
         payload.conversation_id,
         current_user["id"],
     )
-
     db_session.add_message(payload.conversation_id, role="assistant", content=reply)
 
     return {"conversation_id": payload.conversation_id, "reply": reply}
-
-@app.get("/debug/agent")
-def debug_agent():
-    keys = [k for k in dir(root_agent) if k in ("chat","generate","call","respond","complete","__call__","run","invoke")]
-    return {"type": str(type(root_agent)), "candidates": keys}
-
 
 @app.get("/chat/{conversation_id}/history")
 def history(conversation_id: str, current_user=Depends(get_current_user)):
@@ -144,9 +145,6 @@ def history(conversation_id: str, current_user=Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Forbidden")
     msgs = db_session.get_messages(conversation_id)
     return {"conversation_id": conversation_id, "messages": msgs}
-
-import traceback
-from fastapi.responses import PlainTextResponse
 
 @app.exception_handler(Exception)
 async def debug_exception_handler(request, exc):
