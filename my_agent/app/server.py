@@ -2,26 +2,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-print ("GOOGLE_API_KEY:", bool(os.getenv("GOOGLE_API_KEY")))
-
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
-import requests
-import uuid
-from my_agent.agent import root_agent
-from google.adk.runners import Runner
-from my_agent.retrieval_tool import search_report
-from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.genai import types
-from my_agent.app.storage import DatabaseSessionService
 import traceback
-from fastapi.responses import PlainTextResponse
+import time
+from typing import List, Literal, Optional, Dict, Any
 
-LARAVEL_BASE_URL = "http://127.0.0.1:8000"  # kalau docker service name 'laravel'
-app = FastAPI(title="Tanya Dewi API")
-db_session = DatabaseSessionService(db_path="data/chat.db")
-ADK_APP_NAME = "tanya_dewi"
+from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
+
+from google.genai import types
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+
+from my_agent.agent import root_agent, make_agent
+# kalau kamu sudah punya retrieval, nanti kita pakai:
+# from my_agent.retrieval_tool import search_report
+
+
+# =========================
+# Config
+# =========================
+APP_TOKEN = os.getenv("APP_TOKEN")  # samakan dengan AGENT_TOKEN di Laravel
+if not APP_TOKEN:
+    print("[WARN] APP_TOKEN is not set. Set APP_TOKEN env var!")
+
+ADK_APP_NAME = os.getenv("ADK_APP_NAME", "tanya_dewi")
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gemini-1.5-flash")
+
+# =========================
+# FastAPI
+# =========================
+app = FastAPI(title="Tanya Dewi Agent API (Laravel Integrated)")
+
+# ADK runner setup
 adk_session_service = InMemorySessionService()
 adk_runner = Runner(
     app_name=ADK_APP_NAME,
@@ -29,59 +42,53 @@ adk_runner = Runner(
     session_service=adk_session_service,
 )
 
-security = HTTPBearer()
-# DEV_MODE = True
-# DEV_TOKEN ="secrettoken"
+fallback_agent = make_agent(FALLBACK_MODEL)
+fallback_runner = Runner(
+    app_name=ADK_APP_NAME,
+    agent=fallback_agent,
+    session_service=adk_session_service,
+)
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    token = credentials.credentials
+# =========================
+# Auth: server-to-server token
+# =========================
+def verify_app_token(x_app_token: Optional[str] = Header(default=None)):
+    if not APP_TOKEN:
+        raise HTTPException(status_code=500, detail="APP_TOKEN not configured on agent server")
+    if x_app_token != APP_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return True
 
-    try:
-        r = requests.get(
-            f"{LARAVEL_BASE_URL}/api/me",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-            },
-            timeout=10,
-        )
-    except requests.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Laravel auth service unreachable: {e}")
 
-    # Token invalid/expired
-    if r.status_code == 401:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+# =========================
+# Schemas (match Laravel payload)
+# =========================
+class HistoryMsg(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str
 
-    # Forbidden role / belum verify / dll (kalau Laravel kamu pakai 403)
-    if r.status_code == 403:
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    # Error lain dari Laravel
-    if r.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Auth service error: {r.status_code} {r.text}")
-
-    data = r.json()
-    user = data.get("user")
-    if not user or "id" not in user:
-        raise HTTPException(status_code=502, detail="Auth response missing user.id")
-
-    return {"id": user["id"], "email": user.get("email"), "token": token}
-
-class ChatSendRequest(BaseModel):
-    conversation_id: str
+class ChatRequest(BaseModel):
+    session_id: str
+    user_id: int
     message: str
+    history: List[HistoryMsg] = []
 
-@app.post("/chat/start")
-def start_chat(current_user=Depends(get_current_user)):
-    cid = str(uuid.uuid4())
-    db_session.create_session(cid, user_id=current_user["id"])
-    adk_session_service.create_session_sync(
-        app_name=ADK_APP_NAME,
-        user_id=str(current_user["id"]),
-        session_id=cid,
-    )
-    return {"conversation_id": cid}
+class Citation(BaseModel):
+    source: str
+    page: int
+    chunk_id: str
+    score: float
+    excerpt: Optional[str] = None
 
+class ChatResponse(BaseModel):
+    answer: str
+    citations: List[Citation] = []
+    meta: Dict[str, Any] = {}
+
+
+# =========================
+# Helpers
+# =========================
 def _content_to_text(content: types.Content | None) -> str:
     if not content or not content.parts:
         return ""
@@ -91,61 +98,97 @@ def _content_to_text(content: types.Content | None) -> str:
             texts.append(part.text)
     return "".join(texts).strip()
 
-async def _ensure_adk_session(conversation_id: str, user_id: int):
+async def _ensure_adk_session(session_id: str, user_id: int):
     session = await adk_session_service.get_session(
         app_name=ADK_APP_NAME,
         user_id=str(user_id),
-        session_id=conversation_id,
+        session_id=session_id,
     )
     if not session:
         await adk_session_service.create_session(
             app_name=ADK_APP_NAME,
             user_id=str(user_id),
-            session_id=conversation_id,
+            session_id=session_id,
         )
 
-async def call_agent_async(message: str, conversation_id: str, user_id: int):
-    await _ensure_adk_session(conversation_id, user_id)
-    new_message = types.Content(
-        role="user",
-        parts=[types.Part(text=message)],
-    )
+def _is_overloaded_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    if "overload" in text or "unavailable" in text or "503" in text:
+        return True
+    status = getattr(exc, "status_code", None)
+    if status == 503:
+        return True
+    code = getattr(exc, "code", None)
+    if code == 503:
+        return True
+    return False
+
+async def _run_with_runner(runner: Runner, message: str, session_id: str, user_id: int) -> str:
+    await _ensure_adk_session(session_id, user_id)
+
+    # OPTIONAL: kamu bisa inject context/history ke message kalau agent kamu butuh.
+    # Tapi ADK punya session memory sendiri. Karena session_id sama, percakapan tetap nyambung.
+    new_message = types.Content(role="user", parts=[types.Part(text=message)])
+
     final_text = ""
-    async for event in adk_runner.run_async(
+    async for event in runner.run_async(
         user_id=str(user_id),
-        session_id=conversation_id,
+        session_id=session_id,
         new_message=new_message,
     ):
         text = _content_to_text(event.content)
-        if text:
-            final_text = text
         if event.is_final_response() and text:
             final_text = text
-    return final_text
+            break
 
-@app.post("/chat/send")
-async def chat_send(payload: ChatSendRequest, current_user=Depends(get_current_user)):
-    if not db_session.session_belongs_to_user(payload.conversation_id, current_user["id"]):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    return final_text.strip()
 
-    db_session.add_message(payload.conversation_id, role="user", content=payload.message)
+async def call_agent_async(message: str, session_id: str, user_id: int) -> str:
+    try:
+        return await _run_with_runner(adk_runner, message, session_id, user_id)
+    except Exception as e:
+        if not _is_overloaded_error(e):
+            raise
+        print(f"[WARN] model overload, switching to fallback model: {FALLBACK_MODEL}")
+        return await _run_with_runner(fallback_runner, message, session_id, user_id)
 
-    reply = await call_agent_async(
-        payload.message,
-        payload.conversation_id,
-        current_user["id"],
+
+# =========================
+# Main endpoint (called by Laravel)
+# =========================
+@app.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_app_token)])
+async def chat(req: ChatRequest):
+    print("[HIT] /chat", {"session_id": req.session_id, "user_id": req.user_id, "msg_len": len(req.message)})
+    t0 = time.time()
+
+    # 1) (Optional) retrieval step
+    citations: List[Citation] = []
+    # Kalau kamu sudah punya tool retrieval, kamu bisa pakai di sini:
+    # hits = search_report(req.message)
+    # lalu bentuk context untuk agent + isi citations
+
+    # 2) Call ADK agent
+    answer = await call_agent_async(
+        message=req.message,
+        session_id=req.session_id,
+        user_id=req.user_id,
     )
-    db_session.add_message(payload.conversation_id, role="assistant", content=reply)
 
-    return {"conversation_id": payload.conversation_id, "reply": reply}
+    latency_ms = int((time.time() - t0) * 1000)
 
-@app.get("/chat/{conversation_id}/history")
-def history(conversation_id: str, current_user=Depends(get_current_user)):
-    if not db_session.session_belongs_to_user(conversation_id, current_user["id"]):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    msgs = db_session.get_messages(conversation_id)
-    return {"conversation_id": conversation_id, "messages": msgs}
+    return ChatResponse(
+        answer=answer,
+        citations=citations,
+        meta={
+            "latency_ms": latency_ms,
+            "session_id": req.session_id,
+        },
+    )
 
+
+# =========================
+# Debug handler
+# =========================
 @app.exception_handler(Exception)
 async def debug_exception_handler(request, exc):
     return PlainTextResponse(

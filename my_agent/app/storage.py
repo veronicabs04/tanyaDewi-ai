@@ -23,9 +23,16 @@ class DatabaseSessionService:
         CREATE TABLE IF NOT EXISTS sessions (
             conversation_id TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL,
+            period_key TEXT,
             created_at TEXT NOT NULL
         )
         """)
+
+        cur.execute("PRAGMA foreign_keys = ON")
+        cur.execute("PRAGMA table_info(sessions)")
+        cols = [row[1] for row in cur.fetchall()]
+        if "period_key" not in cols:
+            cur.execute("ALTER TABLE sessions ADD COLUMN period_key TEXT")
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS messages (
@@ -41,15 +48,38 @@ class DatabaseSessionService:
         conn.commit()
         conn.close()
 
-    def create_session(self, conversation_id: str, user_id: int):
+    def create_session(self, conversation_id: str, user_id: int, period_key: str | None = None):
+        conn = self._connect()
+        cur = conn.cursor()
+        if period_key is None:
+            cur.execute(
+                "INSERT INTO sessions (conversation_id, user_id, created_at) VALUES (?, ?, ?)",
+                (conversation_id, int(user_id), datetime.utcnow().isoformat()),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO sessions (conversation_id, user_id, period_key, created_at) VALUES (?, ?, ?, ?)",
+                (conversation_id, int(user_id), period_key, datetime.utcnow().isoformat()),
+            )
+        conn.commit()
+        conn.close()
+
+    def get_session_by_user_and_period(self, user_id: int, period_key: str) -> str | None:
         conn = self._connect()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO sessions (conversation_id, user_id, created_at) VALUES (?, ?, ?)",
-            (conversation_id, int(user_id), datetime.utcnow().isoformat()),
+            """
+            SELECT conversation_id
+            FROM sessions
+            WHERE user_id = ? AND period_key = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (int(user_id), period_key),
         )
-        conn.commit()
+        row = cur.fetchone()
         conn.close()
+        return row[0] if row else None
 
     def session_belongs_to_user(self, conversation_id: str, user_id: int) -> bool:
         conn = self._connect()

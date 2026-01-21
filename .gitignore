@@ -4,5 +4,4 @@ data/
 *.db
 __pycache__/
 .adk/
-FR_AI.pdf
 chunks_fr_ai.jsonl

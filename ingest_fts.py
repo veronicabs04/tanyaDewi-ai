@@ -29,7 +29,7 @@ with open(CHUNKS, encoding="utf-8") as f:
             "INSERT INTO report_fts(chunk, source, page, section_title, fr_number, chunk_id) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 row["text"],
-                "FR_AI.pdf",
+                row.get("source") or "unknown",
                 row.get("page"),
                 row.get("section_title"),
                 row.get("fr_number"),

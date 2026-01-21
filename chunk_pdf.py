@@ -74,6 +74,7 @@ def chunk_by_paragraphs(text: str, max_chars: int = 1500, overlap_chars: int = 2
 def build_chunks(pdf_path: str) -> List[Dict[str, Any]]:
     reader = PdfReader(pdf_path)
     all_chunks: List[Dict[str, Any]] = []
+    pdf_name = Path(pdf_path).name
 
     current_section_title: Optional[str] = None
 
@@ -100,6 +101,7 @@ def build_chunks(pdf_path: str) -> List[Dict[str, Any]]:
                 "page": page_idx + 1,  # 1-indexed
                 "section_title": current_section_title,
                 "fr_number": fr_in_chunk,
+                "source": pdf_name,
                 "text": ch,
             })
 
@@ -112,7 +114,7 @@ def save_jsonl(chunks: List[Dict[str, Any]], out_path: str):
 
 if __name__ == "__main__":
     # Ubah path ini sesuai lokasi file kamu
-    pdf_path = "FR_AI.pdf"
+    pdf_path = "knowledge_tanyaDewi.pdf"
     out_path = "chunks_fr_ai.jsonl"
 
     if not Path(pdf_path).exists():

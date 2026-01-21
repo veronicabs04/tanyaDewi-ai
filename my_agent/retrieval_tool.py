@@ -1,6 +1,8 @@
 # my_agent/retrieval_tool.py
 import re
 import sqlite3
+import json
+from typing import List, Dict, Any
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -17,26 +19,41 @@ def _build_fallback_query(query: str) -> str | None:
 def search_report(query: str, k: int = 5) -> dict:
     print(f"[TOOL] search_report called: query={query!r}, k={k}, db={DB_PATH}")
     if not DB_PATH.exists():
-        return {
-            "query": query,
-            "results": [],
-            "error": f"DB not found: {DB_PATH}",
-        }
+        return {"query": query, "results": [], "error": f"DB not found: {DB_PATH}"}
+
     conn = sqlite3.connect(str(DB_PATH))
     cur = conn.cursor()
-    cur.execute(
-        "SELECT chunk, source, page FROM report_fts WHERE report_fts MATCH ? LIMIT ?",
-        (query, k),
-    )
-    rows = cur.fetchall()
+
+    def run(q: str):
+        # pakai bm25 kalau FTS5
+        try:
+            cur.execute(
+                "SELECT chunk, source, page FROM report_fts WHERE report_fts MATCH ? ORDER BY bm25(report_fts) LIMIT ?",
+                (q, k),
+            )
+            return cur.fetchall()
+        except sqlite3.OperationalError:
+            # fallback tanpa bm25 (misal FTS4)
+            cur.execute(
+                "SELECT chunk, source, page FROM report_fts WHERE report_fts MATCH ? LIMIT ?",
+                (q, k),
+            )
+            return cur.fetchall()
+
+    rows = []
+    try:
+        rows = run(query)
+    except sqlite3.OperationalError:
+        rows = []
+
     if not rows:
         fallback_query = _build_fallback_query(query)
         if fallback_query:
-            cur.execute(
-                "SELECT chunk, source, page FROM report_fts WHERE report_fts MATCH ? LIMIT ?",
-                (fallback_query, k),
-            )
-            rows = cur.fetchall()
+            try:
+                rows = run(fallback_query)
+            except sqlite3.OperationalError:
+                rows = []
+
     conn.close()
     results = [{"text": r[0], "source": r[1], "page": r[2]} for r in rows]
     return {"query": query, "results": results}
