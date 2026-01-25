@@ -15,6 +15,8 @@ RUN mkdir -p /srv/data
 
 
 ENV PYTHONPATH=/srv
-EXPOSE 8080
+EXPOSE 8001
 
-CMD ["python", "-m", "my_agent.agent"]
+CMD ["python","-m","uvicorn","my_agent.app.server:app","--host","0.0.0.0","--port","8001","--proxy-headers","--forwarded-allow-ips","*"]
+
+

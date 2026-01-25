@@ -126,22 +126,25 @@ def _is_overloaded_error(exc: Exception) -> bool:
 async def _run_with_runner(runner: Runner, message: str, session_id: str, user_id: int) -> str:
     await _ensure_adk_session(session_id, user_id)
 
-    # OPTIONAL: kamu bisa inject context/history ke message kalau agent kamu butuh.
-    # Tapi ADK punya session memory sendiri. Karena session_id sama, percakapan tetap nyambung.
     new_message = types.Content(role="user", parts=[types.Part(text=message)])
 
-    final_text = ""
+    last_text = ""
     async for event in runner.run_async(
         user_id=str(user_id),
         session_id=session_id,
         new_message=new_message,
     ):
         text = _content_to_text(event.content)
-        if event.is_final_response() and text:
-            final_text = text
+        if text:
+            last_text = text  # simpan teks terakhir yang valid
+
+        # Jangan nunggu final response yang harus ada text.
+        # Banyak kasus final event berisi function_call/tool-result.
+        if event.is_final_response():
             break
 
-    return final_text.strip()
+    return last_text.strip()
+
 
 async def call_agent_async(message: str, session_id: str, user_id: int) -> str:
     try:
