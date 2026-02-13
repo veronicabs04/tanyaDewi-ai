@@ -7,6 +7,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / "data" / "knowledge.db"
 
+STOPWORDS = {
+    "yang", "untuk", "dengan", "pada", "dan", "adalah", "atau", "dari",
+    "ini", "itu", "sebagai", "di", "ke", "oleh", "juga", "karena",
+    "tetapi", "saat", "jika", "akan", "lebih", "bisa", "sudah",
+    "masih", "jadi", "apa", "saya", "kamu", "dia", "mereka", "resep", "cara", "buat", "bikin", "membuat",
+    "gimana", "bagaimana", "apa",
+    "tolong", "dong", "ya",
+    "bisa", "saya", "aku", "kamu"
+}
 
 def _build_fallback_query(query: str) -> str | None:
     terms = [t for t in re.findall(r"[\w]+", query.lower()) if len(t) >= 3]
@@ -15,6 +24,10 @@ def _build_fallback_query(query: str) -> str | None:
     # Use OR so multi-word questions still return partial matches.
     return " OR ".join(f"{t}*" for t in terms)
 
+def _clean_query(query: str) -> str:
+    tokens = re.findall(r"[\w]+", query.lower())
+    tokens = [t for t in tokens if t not in STOPWORDS]
+    return " ".join(tokens)
 
 def _expand_queries(query: str) -> List[str]:
     q = query.strip()
@@ -98,6 +111,7 @@ def search_report(query: str, k: int = 5) -> dict:
         return cur.fetchall()
 
     # --- NEW: try expanded queries + fallback per variant ---
+    query = _clean_query(query)
     variants = _expand_queries(query)
     all_rows = []
 

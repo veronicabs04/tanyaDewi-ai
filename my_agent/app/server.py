@@ -15,14 +15,12 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 
 from my_agent.agent import root_agent, make_agent
-# kalau kamu sudah punya retrieval, nanti kita pakai:
-# from my_agent.retrieval_tool import search_report
-
+from my_agent.retrieval_tool import search_report
 
 # =========================
 # Config
 # =========================
-APP_TOKEN = os.getenv("APP_TOKEN")  # samakan dengan AGENT_TOKEN di Laravel
+APP_TOKEN = os.getenv("APP_TOKEN")
 if not APP_TOKEN:
     print("[WARN] APP_TOKEN is not set. Set APP_TOKEN env var!")
 
@@ -89,6 +87,37 @@ class ChatResponse(BaseModel):
 # =========================
 # Helpers
 # =========================
+
+def _build_context(hits: dict) -> tuple[str, List[Citation]]:
+    ctx_parts: List[str] = []
+    cites: List[Citation] = []
+
+    for i, r in enumerate(hits.get("results", []), start=1):
+        text = (r.get("text") or "").strip()
+        source = r.get("source") or ""
+        page = int(r.get("page") or 0)
+        chunk_id = str(r.get("chunk_id") or "")
+
+        if not text:
+            continue
+
+        ctx_parts.append(
+            f"[S{i}] source={source} page={page} chunk_id={chunk_id}\n{text}"
+        )
+
+        cites.append(
+            Citation(
+                source=source,
+                page=page,
+                chunk_id=chunk_id,
+                score=0.0,  # belum ada score dari tool kamu
+                excerpt=text[:240],
+            )
+        )
+
+    ctx = "\n\n".join(ctx_parts)
+    return ctx, cites
+
 def _content_to_text(content: types.Content | None) -> str:
     if not content or not content.parts:
         return ""
@@ -99,17 +128,25 @@ def _content_to_text(content: types.Content | None) -> str:
     return "".join(texts).strip()
 
 async def _ensure_adk_session(session_id: str, user_id: int):
-    session = await adk_session_service.get_session(
-        app_name=ADK_APP_NAME,
-        user_id=str(user_id),
-        session_id=session_id,
-    )
-    if not session:
+    try:
         await adk_session_service.create_session(
-            app_name=ADK_APP_NAME,
+         app_name=ADK_APP_NAME,
             user_id=str(user_id),
-            session_id=session_id,
+            session_id=session_id,   
         )
+    except Exception:
+        pass
+    # session = await adk_session_service.get_session(
+    #     app_name=ADK_APP_NAME,
+    #     user_id=str(user_id),
+    #     session_id=session_id,
+    # )
+    # if not session:
+    #     await adk_session_service.create_session(
+    #         app_name=ADK_APP_NAME,
+    #         user_id=str(user_id),
+    #         session_id=session_id,
+    #     )
 
 def _is_overloaded_error(exc: Exception) -> bool:
     text = str(exc).lower()
@@ -164,15 +201,77 @@ async def chat(req: ChatRequest):
     print("[HIT] /chat", {"session_id": req.session_id, "user_id": req.user_id, "msg_len": len(req.message)})
     t0 = time.time()
 
-    # 1) (Optional) retrieval step
-    citations: List[Citation] = []
-    # Kalau kamu sudah punya tool retrieval, kamu bisa pakai di sini:
-    # hits = search_report(req.message)
-    # lalu bentuk context untuk agent + isi citations
+    q = req.message.lower()
+    is_recipe = any(w in q for w in [
+        "resep", "alat", "bahan", "takaran", "langkah", "cara", "proses",
+        "berapa gram", "berapa gr", "berapa ml", "sdm", "sdt", "kg", "gr", "ml",
+        "rendam", "rebus", "masak", "kukus", "goreng", "oven", "kulkas", "hari"
+    ])
 
-    # 2) Call ADK agent
+    # 1) Retrieval
+    if is_recipe:
+        base_q = req.message
+        boost_q = req.message + ' "alat" "bahan" "alat & bahan" "alat dan bahan" langkah "langkah-langkah"'
+
+        hits1 = search_report(base_q, k=8)
+        hits2 = search_report(boost_q, k=20)
+
+        merged, seen = [], set()
+        for r in (hits1.get("results", []) + hits2.get("results", [])):
+            key = r.get("chunk_id") or (r.get("source"), r.get("page"), (r.get("text") or "")[:80])
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(r)
+
+        def _recipe_boost(item: dict) -> int:
+            t = (item.get("text") or "").lower()
+            s = 0
+            if "alat & bahan" in t or "alat dan bahan" in t:
+                s += 5
+            if "langkah" in t:
+                s += 5
+            return s
+
+        merged.sort(key=_recipe_boost, reverse=True)
+        hits = {"query": base_q, "results": merged[:15]}
+        context, citations = _build_context(hits)
+    else:
+        hits = search_report(req.message, k=10)
+        context, citations = _build_context(hits)
+
+    # 2) Prompt
+    if is_recipe:
+        prompt = (
+            "Gunakan REFERENSI untuk menjawab dan ekstrak resep.\n"
+            "Format:\n"
+            "## Manisan Pala Basah\n"
+            "- Alat & Bahan:\n"
+            "- Langkah-langkah:\n"
+            "## Manisan Pala Kering\n"
+            "- Alat & Bahan:\n"
+            "- Langkah-langkah:\n"
+            "Jika ada bagian yang tidak ada di potongan referensi, tulis 'tidak ada di potongan referensi'.\n"
+            "Jangan bilang 'tidak ditemukan' kalau ada referensi relevan.\n\n"
+            "=== REFERENSI ===\n"
+            f"{context}\n"
+            "=== END REFERENSI ===\n\n"
+            f"Pertanyaan user: {req.message}"
+        )
+    else:
+        prompt = (
+            "Gunakan REFERENSI untuk menjawab pertanyaan user secara spesifik dan praktis.\n"
+            "Jika pertanyaan minta langkah/prosedur, berikan langkah. Jika minta strategi/penjelasan, berikan poin-poin.\n"
+            "Jangan bilang 'tidak ditemukan' kalau ada referensi relevan.\n\n"
+            "=== REFERENSI ===\n"
+            f"{context}\n"
+            "=== END REFERENSI ===\n\n"
+            f"Pertanyaan user: {req.message}"
+        )
+
+    # 3) Call agent
     answer = await call_agent_async(
-        message=req.message,
+        message=prompt,
         session_id=req.session_id,
         user_id=req.user_id,
     )
@@ -182,12 +281,8 @@ async def chat(req: ChatRequest):
     return ChatResponse(
         answer=answer,
         citations=citations,
-        meta={
-            "latency_ms": latency_ms,
-            "session_id": req.session_id,
-        },
+        meta={"latency_ms": latency_ms, "session_id": req.session_id},
     )
-
 
 # =========================
 # Debug handler
