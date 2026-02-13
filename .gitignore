@@ -1,7 +1,16 @@
 .venv/
 .env
+
+# ignore folder data by default
 data/
+
+# ignore semua .db
 *.db
+
+# tapi IZINKAN knowledge.db untuk deploy
+!data/
+!data/knowledge.db
+
 __pycache__/
 .adk/
 chunks_fr_ai.jsonl
