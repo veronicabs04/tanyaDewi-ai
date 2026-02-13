@@ -10,6 +10,7 @@ COPY my_agent/app/requirement.txt /srv/my_agent/app/requirement.txt
 RUN pip install --no-cache-dir -r /srv/my_agent/app/requirement.txt
 
 COPY my_agent /srv/my_agent
+COPY data /srv/data
 
 RUN mkdir -p /srv/data
 
