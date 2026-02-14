@@ -84,8 +84,8 @@ def _expand_queries(query: str) -> List[str]:
     return out[:6]
 
 
-def search_report(query: str, k: int = 5) -> dict:
-    print(f"[TOOL] search_report called: query={query!r}, k={k}, db={DB_PATH}")
+def search_report(query: str, k: int = 5, source_like: str | None = None) -> dict:
+    print(f"[TOOL] search_report called: query={query!r}, k={k}, source_like={source_like}, db={DB_PATH}")
     if not DB_PATH.exists():
         return {"query": query, "results": [], "error": f"DB not found: {DB_PATH}"}
 
@@ -102,43 +102,51 @@ def search_report(query: str, k: int = 5) -> dict:
     select_sql = ", ".join(select_cols)
 
     def run(q: str):
-        cur.execute(
-            f"SELECT {select_sql} FROM report_fts "
-            "WHERE report_fts MATCH ? "
-            "ORDER BY bm25(report_fts) LIMIT ?",
-            (q, k),
-        )
-        return cur.fetchall()
+        # ALWAYS return a list
+        if source_like:
+            cur.execute(
+                f"SELECT {select_sql} FROM report_fts "
+                "WHERE report_fts MATCH ? AND source LIKE ? "
+                "ORDER BY bm25(report_fts) LIMIT ?",
+                (q, source_like, k),
+            )
+            return cur.fetchall()
+        else:
+            cur.execute(
+                f"SELECT {select_sql} FROM report_fts "
+                "WHERE report_fts MATCH ? "
+                "ORDER BY bm25(report_fts) LIMIT ?",
+                (q, k),
+            )
+            return cur.fetchall()
 
-    # --- NEW: try expanded queries + fallback per variant ---
-    query = _clean_query(query)
-    variants = _expand_queries(query)
+    # --- expanded queries + fallback ---
+    query_clean = _clean_query(query)
+    variants = _expand_queries(query_clean)
+
     all_rows = []
 
-    # 1) coba query yang di-expand
     for qv in variants:
         try:
-            all_rows.extend(run(qv))
+            rows = run(qv) or []
+            all_rows.extend(rows)
         except sqlite3.OperationalError:
             continue
 
-    # 2) kalau belum dapat, pakai fallback OR untuk tiap variant
     if not all_rows:
         for qv in variants:
             fb = _build_fallback_query(qv)
             if not fb:
                 continue
             try:
-                all_rows.extend(run(fb))
+                rows = run(fb) or []
+                all_rows.extend(rows)
             except sqlite3.OperationalError:
                 continue
 
-    rows = all_rows
-
-    # --- NEW: dedup results (biar tidak dobel karena banyak variant) ---
     results = []
     seen = set()
-    for row in rows:
+    for row in all_rows:
         item = dict(zip(select_cols, row))
         key = (
             item.get("source"),
@@ -166,4 +174,4 @@ def search_report(query: str, k: int = 5) -> dict:
     conn.close()
     print(f"[TOOL] search_report hits={len(results)} variants={variants}")
 
-    return {"query": query, "results": results}
+    return {"query": query_clean, "results": results}

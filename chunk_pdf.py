@@ -83,7 +83,7 @@ def split_by_headings(text: str):
 
     return blocks
 
-def build_chunks(pdf_path: str, max_chars: int = 1500, overlap_chars: int = 200) -> List[Dict[str, Any]]:
+def build_chunks(pdf_path: str, max_chars: int = 1500, overlap_chars: int = 0) -> List[Dict[str, Any]]:
     reader = PdfReader(pdf_path)
     pdf_name = Path(pdf_path).name
     stem = Path(pdf_path).stem
@@ -102,7 +102,11 @@ def build_chunks(pdf_path: str, max_chars: int = 1500, overlap_chars: int = 200)
             if not body:
                 continue
 
-            subchunks = chunk_by_paragraphs(body, max_chars=max_chars, overlap_chars=overlap_chars)
+            if len(body) <= max_chars:
+                subchunks = [body]
+            else:
+                subchunks = chunk_by_paragraphs(body, max_chars=max_chars, overlap_chars=0)
+
 
             for ci, ch in enumerate(subchunks):
 
@@ -110,6 +114,7 @@ def build_chunks(pdf_path: str, max_chars: int = 1500, overlap_chars: int = 200)
                     "id": f"{stem}__p{page_idx+1:03d}_b{bi+1:02d}_c{ci+1:02d}",
                     "source": pdf_name,
                     "category": category,
+                    "section_title": b["h2"] or b["h1"],
                     "page": page_idx + 1,
                     "h1": b["h1"],
                     "h2": b["h2"],

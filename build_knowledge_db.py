@@ -21,6 +21,7 @@ CREATE VIRTUAL TABLE report_fts USING fts5(
   source,
   page,
   section_title,
+  product,
   fr_number,
   chunk_id,
   category

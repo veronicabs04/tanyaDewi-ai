@@ -211,10 +211,10 @@ async def chat(req: ChatRequest):
     # 1) Retrieval
     if is_recipe:
         base_q = req.message
-        boost_q = req.message + ' "alat" "bahan" "alat & bahan" "alat dan bahan" langkah "langkah-langkah"'
+        boost_q = f'({base_q}) AND (alat OR bahan OR takaran OR langkah OR "langkah-langkah" OR cara OR proses OR "alat" NEAR "bahan")'
 
-        hits1 = search_report(base_q, k=8)
-        hits2 = search_report(boost_q, k=20)
+        hits1 = search_report(base_q, k=8, source_like="%Resep%")
+        hits2 = search_report(boost_q, k=20, source_like="%Resep%")
 
         merged, seen = [], set()
         for r in (hits1.get("results", []) + hits2.get("results", [])):
