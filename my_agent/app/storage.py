@@ -34,15 +34,15 @@ class DatabaseSessionService:
         if "period_key" not in cols:
             cur.execute("ALTER TABLE sessions ADD COLUMN period_key TEXT")
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            conversation_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(conversation_id) REFERENCES sessions(conversation_id)
-        )
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES sessions(conversation_id)
+                )
         """)
 
         conn.commit()
