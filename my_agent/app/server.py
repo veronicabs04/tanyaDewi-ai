@@ -232,7 +232,8 @@ async def chat(req: ChatRequest):
     is_recipe = any(w in q for w in [
         "resep", "alat", "bahan", "takaran", "langkah", "cara", "proses",
         "berapa gram", "berapa gr", "berapa ml", "sdm", "sdt", "kg", "gr", "ml",
-        "rendam", "rebus", "masak", "kukus", "goreng", "oven", "kulkas", "hari"
+        "rendam", "rebus", "masak", "kukus", "goreng", "oven", "kulkas", "hari",
+        "soap", "handsoap", "hand soap", "sabun", "sabun tangan", "sabun cair", "hand wash", "handwash",
     ])
 
     # =========================
